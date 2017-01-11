@@ -1,0 +1,22 @@
+[
+  {
+    "type": "web",
+    "label": "vials",
+    "repo": "Caleydo/vials",
+    "branch": "migrate",
+    "additional": []
+  },
+  {
+    "type": "api",
+    "label": "vials_server",
+    "repo": "phovea/phovea_server",
+    "branch": "develop",
+    "additional": [
+      {
+        "name": "vials_server",
+        "repo": "Caleydo/vials_server",
+        "branch": "migrate"
+      }
+    ]
+  }
+]
