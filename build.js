@@ -103,6 +103,28 @@ function dockerSave(image, target) {
   });
 }
 
+function dockerRemoveImages(productName) {
+  console.log(chalk.blue(`docker images | grep ${productName} | awk '{print $1":"$2}') | xargs docker rmi`));
+  const spawn = require('child_process').spawn;
+  const opts = {env};
+  return new Promise((resolve, reject) => {
+    const p = spawn('docker', ['images'], opts);
+    const p2 = spawn('grep', [productName], opts);
+    p.stdout.pipe(p2.stdin);
+    const p3 = spawn('awk', ['{print $1":"$2}'], opts);
+    p2.stdout.pipe(p3.stdin);
+    const p4 = spawn('xargs', ['docker', 'rmi'], {env, stdio: [p3.stdout, 1, 2]});
+    p4.on('close', (code) => {
+      if (code == 0) {
+        resolve();
+      } else {
+        console.log('invalid error code, but continuing');
+        resolve();
+      }
+    });
+  });
+}
+
 function createQuietTerminalAdapter() {
   const TerminalAdapter = require('yeoman-environment/lib/adapter');
   const impl = new TerminalAdapter();
@@ -188,6 +210,7 @@ function patchComposeFile(p, composeTemplate) {
   return r;
 }
 
+
 function postBuild(p, dir, buildInSubDir) {
   return Promise.resolve(null)
     .then(() => docker(`${dir}${buildInSubDir ? '/' + p.name : ''}`, `build -t ${p.image} -f deploy/Dockerfile .`))
@@ -237,15 +260,16 @@ function buildServerApp(p, dir) {
 
   //copy all together
   act = act
-    .then(() => fs.ensureDirAsync(`${dir}/build`))
-    .then(() => fs.copyAsync(`${dir}/${name}/build/source`, `${dir}/build/`))
-    .then(() => Promise.all(p.additional.map((pi) => fs.copyAsync(`${dir}/${pi.name}/build/source/*`, `${dir}/build/source/`))));
+    .then(() => fs.ensureDirAsync(`${dir}/build/source`))
+    .then(() => fs.copyAsync(`${dir}/${name}/build/source`, `${dir}/build/source/`))
+    .then(() => Promise.all(p.additional.map((pi) => fs.copyAsync(`${dir}/${pi.name}/build/source`, `${dir}/build/source/`))));
 
   //let act = Promise.resolve([]);
 
   //copy main deploy thing and create a docker out of it
   return act
-    .then(() => fs.copyAsync(`${dir}/${name}/deploy`, `${dir}/`))
+    .then(() => fs.ensureDirAsync(`${dir}/deploy`))
+    .then(() => fs.copyAsync(`${dir}/${name}/deploy`, `${dir}/deploy/`))
     .then(postBuild.bind(null, p, dir, false));
 }
 
@@ -274,6 +298,7 @@ function mergeCompose(composePartials) {
 }
 
 function buildCompose(descs, composePartials) {
+  console.log('create docker-compose.yml');
   const dockerCompose = mergeCompose(composePartials);
   const services = dockerCompose.services;
   // link the api server types to the web types and server to the api
@@ -301,6 +326,7 @@ function pushImages(dockerCompose) {
   if (!dockerRepository) {
     return null;
   }
+  console.log('push docker images');
   const services = dockerCompose.services;
 
   //collect all images
@@ -312,12 +338,18 @@ function pushImages(dockerCompose) {
     }
   });
 
-  const tags = images.map((image) => ({image, tag: `${dockerRepository}/${image}`}));
+  const tags = [];
+  if (!argv.noDefaultTags) {
+    tags.push(...images.map((image) => ({image, tag: `${dockerRepository}/${image}`})));
+  }
   if (argv.pushExtra) { //push additional custom prefix without the version
     tags.push(...images.map((image) => ({
       image,
       tag: `${dockerRepository}/${image.substring(0, image.lastIndexOf(':'))}:${argv.pushExtra}`
     })));
+  }
+  if (tags.length === 0) {
+    return Promise.resolve([]);
   }
   return Promise.all(tags.map((tag) => docker('.', `tag ${tag.image} ${tag.tag}`)))
     .then(() => Promise.all(tags.map((tag) => docker('.', `push ${tag.tag}`))));
@@ -338,6 +370,7 @@ if (require.main === module) {
   const productName = pkg.name.replace('_product', '');
 
   fs.emptyDirAsync('build')
+    .then(dockerRemoveImages.bind(this, productName))
     .then(() => Promise.all(descs.map((d, i) => {
       d.additional = d.additional || []; //default values
       d.name = d.name || fromRepoUrl(d.repo);
@@ -360,5 +393,12 @@ if (require.main === module) {
       console.log(chalk.bold('summary: '));
       const maxLength = Math.max(...descs.map((d) => d.name.length));
       descs.forEach((d) => console.log(` ${d.name}${'.'.repeat(3 + (maxLength - d.name.length))}` + (d.error ? chalk.red('ERROR') : chalk.green('SUCCESS'))));
+      const anyErrors = descs.some((d) => d.error);
+      if (anyErrors) {
+        process.exit(1);
+      }
+    }).catch((error) => {
+      console.error('ERROR extra building ', error);
+      process.exit(1);
     });
 }
